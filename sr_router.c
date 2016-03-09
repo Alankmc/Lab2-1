@@ -122,7 +122,34 @@ void sr_handlepacket(struct sr_instance* sr,
   uint16_t type = header->ether_type;
   if(type==2048){//ip packet (not sure if it's supposed to be a hex value or what
 	  sr_ip_hdr_t *ip_packet = packet+21;
+
 	  if(cksum(&ip_packet,len-4)==ip_packet->ip_sum){//I _think_ len is in terms of bytes
+
+		  // Check if the packet is destined to one of the router's IPs
+		  struct sr_if * currentInterface = sr -> if_list; // Goes through the router's interface list
+		  while ( currentInterface != NULL )
+		  {
+			  if ( ip_packet -> ip_dst == currentInterface -> ip )
+			  {
+				  break;
+			  }
+
+		  }
+
+		  if ( currentInterface != NULL )
+		  {
+			  if ( ip_packet -> ip_p == 1 )	// It's and ICMP packet
+			  {
+				  struct sr_icmp_hdr * icmp_packet = ip_packet + sizeof(sr_ip_hdr_t);
+
+				  if ( icmp_packet -> icmp_type == 8 ) // It's an echo request
+				  {
+					  // Make packet to reply
+				  }
+			  }
+		  }
+
+
 		  ip_packet->ip_ttl--;
 		  ip_packet->ip_sum = cksum(&ip_packet,len-4);
 		  struct sr_rt *rt = sr->routing_table;
@@ -134,8 +161,4 @@ void sr_handlepacket(struct sr_instance* sr,
 		  }
 	  }
   }
-
-
-
 }/* end sr_ForwardPacket */
-
