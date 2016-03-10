@@ -166,7 +166,7 @@ enum sr_arp_opcode {
 };
 
 enum sr_arp_hrd_fmt {
-  arp_hrd_ethernet = 0x0001,
+  arp_hrd_ethernet = 0x0001, /* =^.^= =^.^= =^.^= */
 };
 
 

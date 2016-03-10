@@ -91,12 +91,8 @@ void sr_init(struct sr_instance* sr)
     pthread_create(&thread, &(sr->attr), sr_arpcache_timeout, sr);
     
     /* Add initialization code here! */
-    /* DEBUGGING!! */
-    uint8_t * testPacket = createICMPPacket();
 
-    print_hdr_eth(testPacket);
-    print_hdr_ip(testPacket + sizeof(sr_ethernet_hdr_t));
-    print_hdr_icmp(testPacket + sizeof(sr_ethernet_hdr_t) + sizeof(sr_ip_hdr_t));
+
 } /* -- sr_init -- */
 
 /*---------------------------------------------------------------------
@@ -122,7 +118,6 @@ uint8_t * createICMPPacket(uint8_t sourceMAC[6],
 		uint8_t icmpCode,
 		uint8_t icmpType)
 {
-
 	uint8_t * newPacket;
 
 	newPacket = malloc(
@@ -174,13 +169,13 @@ uint8_t * createICMPPacket(uint8_t sourceMAC[6],
 }
 
 /* Preps a type 3 ICMP packet */
-uint8_t * createICMP_type3Packet(uint8_t sourceMAC[6],
+uint8_t * createICMP_type3Packet(
+		uint8_t sourceMAC[6],
 		uint8_t destMAC[6],
 		uint32_t sourceIP,
 		uint32_t destIP,
 		uint8_t icmpCode,
 		uint16_t nextMTU
-
 		)
 {
 
@@ -236,85 +231,194 @@ uint8_t * createICMP_type3Packet(uint8_t sourceMAC[6],
     return newPacket;
 }
 
+uint8_t * createARPreply(
+		uint8_t sourceMAC[6],
+		uint8_t destMAC[6],
+		uint32_t sourceIP,
+		uint32_t destIP
+		)
+{
+	uint8_t * newPacket;
+
+	newPacket = malloc( sizeof(sr_ethernet_hdr_t) + sizeof(sr_arp_hdr_t) );
+
+	sr_ethernet_hdr_t * ethernetHeader = newPacket;
+	sr_arp_hdr_t * arpHeader = newPacket + sizeof( sr_ethernet_hdr_t );
+
+	ethernetHeader -> ether_type =  htons(0x0806);
+
+	arpHeader -> ar_hrd = 0;	/* Hardware */
+	arpHeader -> ar_pro = htons(0x0800);	/* Protocol */
+	arpHeader -> ar_hln = 6;
+	arpHeader -> ar_pln = 4;
+	arpHeader -> ar_op = htons(2);	/* Op code, reply */
+
+	int i;
+	for ( i = 0; i < 6; i++ )
+	{
+		ethernetHeader -> ether_shost[i] = (uint8_t) sourceMAC[i];
+		ethernetHeader -> ether_dhost[i] = (uint8_t) destMAC[i];
+		arpHeader -> ar_sha[i] = (uint8_t) sourceMAC[i];
+		arpHeader -> ar_tha[i] = (uint8_t) destMAC[i];
+	}
+
+	arpHeader -> ar_sip = sourceIP;
+	arpHeader -> ar_tip = destIP;
+
+	return newPacket;
+}
+
+/* Searches the router's Interfaces for a given IP. If found, return it.
+ * If not, return null.
+ */
+struct sr_if * findInterfaceInRouter(struct sr_if * currentInterface, uint32_t ip)
+{
+	/* Goes through the router's interface list */
+	while ( currentInterface != NULL )
+	{
+		if ( ip == currentInterface -> ip )
+			break;
+
+		currentInterface = currentInterface -> next;
+	}
+
+	return currentInterface;
+}
+
+struct sr_if * findInterfaceWithName(struct sr_if * currentInterface, char * name)
+{
+	/* Goes through the router's interface list */
+	while ( currentInterface != NULL )
+	{
+		if ( memcmp(name, currentInterface -> name, 4 ) )
+			break;
+
+		currentInterface = currentInterface -> next;
+	}
+
+	return currentInterface;
+}
 
 void sr_handlepacket(struct sr_instance* sr,
-        uint8_t * packet/* lent */,
-        unsigned int len,
-        char* interface/* lent */)
+		uint8_t * packet/* lent */,
+		unsigned int len,
+		char* interface/* lent */)
 {
-  /* REQUIRES */
-  assert(sr);
-  assert(packet);
-  assert(interface);
+	/* REQUIRES */
+	assert(sr);
+	assert(packet);
+	assert(interface);
 
-  printf("*** -> Received packet of length %d \n",len);
+	printf("*** -> Received packet of length %d \n",len);
 
-  /* fill in code here */
+	print_hdr_eth(packet);
+	print_hdr_arp(packet + sizeof(sr_ethernet_hdr_t));
+	/* figure out what kind of packet it is */
+	sr_ethernet_hdr_t *header = packet;
+	int type = ntohs(header -> ether_type);
+	printf("TEST: %d\n\n", type);
+	if(type == 2048)
+	{ /* ip packet (not sure if it's supposed to be a hex value or what */
+		sr_ip_hdr_t *ip_packet = packet+21;
 
-  /* figure out what kind of packet it is */
-  sr_ethernet_hdr_t *header = packet;
-  uint16_t type = header->ether_type;
-  if(type==2048){ /* ip packet (not sure if it's supposed to be a hex value or what */
-	  sr_ip_hdr_t *ip_packet = packet+21;
+		if(cksum(&ip_packet,len-4)==ip_packet->ip_sum)
+		{ /* I _think_ len is in terms of bytes */
+			printf("Checksum OK!\n");
+			/* Check if the packet is destined to one of the router's IPs */
+			struct sr_if * destInterface = findInterfaceInRouter(sr -> if_list, ip_packet -> ip_dst);
 
-	  if(cksum(&ip_packet,len-4)==ip_packet->ip_sum){ /* I _think_ len is in terms of bytes */
+			if ( destInterface != NULL )
+				/* The packet is directed to one of the router's interfaces! */
+			{
+				printf("Found an interface to whom it was destined!\n");
+				/* If it contains a TCP/UDP payload */
+				if ( ( ip_packet -> ip_p == 6 ) || ( ip_packet -> ip_p ==  17 ) )
+				{
+					/* Make Port Unreachable packet (type 3, code 3) */
+					uint8_t * newFrame = createICMP_type3Packet(header -> ether_dhost,
+							header -> ether_shost, destInterface -> ip, ip_packet ->ip_src,
+							3, 0);
+					/* Sends new Packet from interface that the packet was destined to */
+					sr_send_packet(sr, newFrame, (uint) sizeof(sr_ethernet_hdr_t) + (uint) sizeof(sr_ip_hdr_t)
+							+ (uint) sizeof(sr_icmp_t3_hdr_t), destInterface -> name);
 
-		  /* Check if the packet is destined to one of the router's IPs */
-		  struct sr_if * currentInterface = sr -> if_list; /* Goes through the router's interface list */
-		  while ( currentInterface != NULL )
-		  {
-			  if ( ip_packet -> ip_dst == currentInterface -> ip )
-				  break;
-		  }
+					free(newFrame);
+				}
 
-		  if ( currentInterface != NULL )
-		/* The packet is directed to one of the router's interfaces! */
-		  {
-			  /* If it contains a TCP/UDP payload */
-			  if ( ( ip_packet -> ip_p == 6 ) || ( ip_packet -> ip_p ==  17 ) )
-			  {
-				  /* Make Port Unreachable packet (type 3, code 3) */
-				  uint8_t * newFrame = createICMP_type3Packet(header -> ether_dhost,
-						  header -> ether_shost, currentInterface -> ip, ip_packet ->ip_src,
-						  3, 0);
-				  /* Sends new Packet from interface that the packet was destined to */
-				  sr_send_packet(sr, newFrame, (uint) sizeof(sr_ethernet_hdr_t) + (uint) sizeof(sr_ip_hdr_t)
-						  + (uint) sizeof(sr_icmp_t3_hdr_t), currentInterface -> name);
+				if ( ip_packet -> ip_p == 1 )	/* It's and ICMP packet */
+				{
+					printf("It's an ICMP!\n");
+					struct sr_icmp_hdr * icmp_packet = ip_packet + sizeof(sr_ip_hdr_t);
 
-				  free(newFrame);
-			  }
+					if ( icmp_packet -> icmp_type == 8 ) /* It's an echo request */
+					{
+						printf("It's an echo!\n");
+						/* Creates ICMP echo response */
+						uint8_t * newFrame = createICMPPacket(destInterface -> addr,
+								header -> ether_shost, destInterface -> ip, ip_packet ->ip_src,
+								0, 0);
+						/* Sends new Packet from interface that the packet was destined to */
+						sr_send_packet(sr, newFrame,
+								(uint) sizeof(sr_ethernet_hdr_t) + (uint)sizeof(sr_arp_hdr_t),
+								destInterface -> name);
 
-			  if ( ip_packet -> ip_p == 1 )	/* It's and ICMP packet */
-			  {
-				  struct sr_icmp_hdr * icmp_packet = ip_packet + sizeof(sr_ip_hdr_t);
+						free(newFrame);
+					}
+				}
+			}
 
-				  if ( icmp_packet -> icmp_type == 8 ) /* It's an echo request */
-				  {
-					  /* Creates ICMP echo response */
-					  uint8_t * newFrame = createICMPPacket(header -> ether_dhost,
-							  header -> ether_shost, currentInterface -> ip, ip_packet ->ip_src,
-							  0, 0);
-					  /* Sends new Packet from interface that the packet was destined to */
-					  sr_send_packet(sr, newFrame, (uint) sizeof(sr_ethernet_hdr_t) + (uint) sizeof(sr_ip_hdr_t)
-							  + (uint) sizeof(sr_icmp_hdr_t), currentInterface -> name);
+			ip_packet->ip_ttl--;
+			ip_packet->ip_sum = cksum(&ip_packet,len-4);
+			struct sr_rt *rt = sr->routing_table;
 
-					  free(newFrame);
-				  }
-			  }
-		  }
+			while(rt->next){
+				/* longest prefix match */
+				uint32_t dest = ip_packet->ip_dst;
 
+			}
 
-		  ip_packet->ip_ttl--;
-		  ip_packet->ip_sum = cksum(&ip_packet,len-4);
-		  struct sr_rt *rt = sr->routing_table;
+		}
+	}
+	/* If it's an ARP packet */
+	else if ( type ==  2054)
+	{
+		printf("----> Found and ARP Packet!\n");
+		sr_arp_hdr_t * arpHeader = packet + sizeof(sr_ethernet_hdr_t);
 
-		  while(rt->next){
-			  /* longest prefix match */
-			  uint32_t dest = ip_packet->ip_dst;
+		/* Check if it's a request */
+		if ( ntohs(arpHeader -> ar_op) == 1 )
+		{
+			printf("----> It's a request!\n");
+			struct sr_if * interface = findInterfaceInRouter(sr -> if_list, arpHeader -> ar_tip);
+			if ( interface == NULL )
+			{
+				/* It was meant for some other IP! */
+			}
+			else
+			{
+				printf("----> Received an ARP request to find router's IP:\n");
+				print_addr_ip_int(ntohl(interface -> ip));
+				/* It's a request to find the router's IP */
+				/* So, the router must send an ARP reply to the sender */
+				struct sr_if * intByName = findInterfaceWithName(sr -> if_list, interface);
+				uint8_t * newFrame = createARPreply(
+						intByName -> addr,
+						arpHeader -> ar_sha,
+						intByName -> ip,
+						arpHeader -> ar_sip
+				);
+				/* Sends new Packet from interface that the packet was destined to */
+				printf("----> Attempting to send packet:\n");
+				print_hdrs(newFrame,
+						(uint) sizeof(sr_ethernet_hdr_t) + (uint) sizeof(sr_arp_hdr_t));
+				sr_send_packet(sr, newFrame,
+						(uint) sizeof(sr_ethernet_hdr_t) + (uint) sizeof(sr_arp_hdr_t),
+						intByName -> name);
 
-		  }
-	  }
-  }
+				free(newFrame);
+			}
+		}
+	}
 }/* end sr_ForwardPacket */
 
 
