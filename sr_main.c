@@ -107,6 +107,9 @@ int main(int argc, char **argv)
     /* -- zero out sr instance -- */
     sr_init_instance(&sr);
 
+    /* DEBUGGING!!! */
+    sr_init(&sr);
+
     /* -- set up routing table from file -- */
     if(template == NULL) {
         sr.template[0] = '\0';
